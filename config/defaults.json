@@ -1,0 +1,21 @@
+{
+  "daemon": {
+    "host": "127.0.0.1",
+    "port": 47811,
+    "cacheSeconds": 5
+  },
+  "commands": {
+    "timeoutSeconds": 10
+  },
+  "native": {
+    "scanDirs": [
+      "~/.vst3",
+      "~/.vst",
+      "~/.clap",
+      "~/.lv2"
+    ],
+    "ignoreSubdirs": [
+      "yabridge"
+    ]
+  }
+}

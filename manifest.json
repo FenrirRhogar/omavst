@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "fenrirrhogar.omavst",
+  "name": "OmaVST",
+  "version": "0.1.0",
+  "author": "FenrirRhogar",
+  "description": "Plugin manager for Linux music producers: Windows plugins (yabridge) and native VST3/CLAP/LV2 plugins in one searchable list. Sync, disable, remove, install from a Windows installer, back up the Wine prefix, and spot plugins that crash.",
+  "license": "MIT",
+  "homepage": "https://github.com/FenrirRhogar/omavst",
+  "kinds": [
+    "bar-widget",
+    "service"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "barWidget": "ui/BarWidget.qml",
+    "service": "ui/Service.qml"
+  },
+  "barWidget": {
+    "displayName": "OmaVST",
+    "description": "Your audio plugins at a glance; highlights when plugins need a yabridge sync.",
+    "category": "Audio",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

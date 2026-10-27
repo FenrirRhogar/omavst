@@ -1,0 +1,24 @@
+# Optional: run the OmaVST daemon outside the Omarchy shell,
+# e.g. so SSL 12 button mapping keeps working while the shell restarts.
+# The plugin's service detects a running daemon and won't start a second one.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp systemd/omavst.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now omavst.service
+
+[Unit]
+Description=OmaVST backend daemon
+Documentation=https://github.com/FenrirRhogar/omavst
+After=pipewire.service
+Wants=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/.config/omarchy/plugins/fenrirrhogar.omavst/backend/daemon.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
