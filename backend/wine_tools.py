@@ -22,6 +22,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -203,12 +204,39 @@ def restore_snapshot(config: dict[str, Any], name: str,
 INSTALLER_SUFFIXES = (".exe", ".msi")
 
 
+def check_installer(installer: str) -> Path:
+    """Only run installers the desktop user controls.
+
+    The file (after resolving symlinks) must be a regular file owned by this
+    user and not writable by anyone else, in a folder nobody else can swap
+    files in. That rules out running a file another account planted, e.g.
+    in /tmp, even if a request did reach the daemon.
+    """
+    path = Path(os.path.realpath(installer))
+    if path.suffix.lower() not in INSTALLER_SUFFIXES:
+        raise ToolError("bad_installer", "pick a Windows installer (.exe or .msi)")
+    try:
+        st = os.stat(path)
+        parent = os.stat(path.parent)
+    except OSError:
+        raise ToolError("bad_installer", f"{installer} not found")
+    uid = os.getuid()
+    if not stat.S_ISREG(st.st_mode):
+        raise ToolError("bad_installer", "the installer must be a regular file")
+    if st.st_uid != uid or st.st_mode & 0o022:
+        raise ToolError("untrusted_installer",
+                        f"{path.name} isn't owned by you or can be changed by other users; copy it to your Downloads folder first")
+    shared_dir = parent.st_mode & 0o002 and not parent.st_mode & stat.S_ISVTX
+    if (parent.st_uid not in (uid, 0)) or (parent.st_mode & 0o020 and parent.st_uid != uid) or shared_dir:
+        raise ToolError("untrusted_installer",
+                        f"{path.parent} can be changed by other users; move the installer to your Downloads folder first")
+    return path
+
+
 def run_installer(prefix: str, installer: str,
                   progress: Callable[[str], None] = lambda _m: None) -> dict[str, Any]:
     """Run a Windows installer in ``prefix`` and wait for it to exit."""
-    path = Path(installer)
-    if not path.is_file() or path.suffix.lower() not in INSTALLER_SUFFIXES:
-        raise ToolError("bad_installer", "pick a Windows installer (.exe or .msi)")
+    path = check_installer(installer)
     if not shutil.which("wine"):
         raise ToolError("not_installed", "wine is not installed")
     cmd = ["wine", "msiexec", "/i", str(path)] if path.suffix.lower() == ".msi" else ["wine", str(path)]

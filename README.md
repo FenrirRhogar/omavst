@@ -34,6 +34,7 @@ backend/
   reaper.py          REAPER plugin cache (names, vendors, cleanup)
   crash_watch.py     yabridge crash log and REAPER launcher entry
   vst_scanner.py     yabridgectl status parser + native plugin scan
+  auth.py            per-session API token
   common.py          command runner, config loading, error format
 systemd/             optional user unit for running the daemon standalone
 config/defaults.json default settings
@@ -196,9 +197,20 @@ python3 backend/daemon.py --once plugins  # one-shot JSON dump, no server
 
 Quick actions return their result plus a fresh `plugins` payload. Background
 jobs return at once and report progress in `job`. Only one action or job runs
-at a time. POSTs require the header `X-OmaVST: 1`, and any
-request carrying an `Origin` header is rejected, so a web page in your
-browser can't trigger them through loopback.
+at a time.
+
+**Authentication.** Every endpoint except `/ping` needs the header
+`X-OmaVST-Token: <token>`, where the token is the contents of
+`$XDG_RUNTIME_DIR/omavst/token`:
+
+```sh
+curl -H "X-OmaVST-Token: $(cat "$XDG_RUNTIME_DIR/omavst/token")" http://127.0.0.1:47811/api/v1/plugins
+```
+
+The daemon makes a new random token each time it starts, writes it with mode
+0600 in your runtime folder (mode 0700, so only you can read it) and deletes
+it on exit. Any request carrying an `Origin` header is refused, so browser
+pages can't use the API either.
 
 `GET` results are cached for `daemon.cacheSeconds` (default 5 s); add
 `?refresh=1` to force a rescan. The daemon binds to loopback only.
@@ -217,6 +229,13 @@ Defaults live in `config/defaults.json`. Override any key in
 Omarchy plugins run unsandboxed with your user permissions. The plugin starts
 one long-running process, `python3 backend/daemon.py`, listening on 127.0.0.1
 only. Nothing uses sudo.
+
+Other accounts on the same machine can connect to 127.0.0.1 too, so the
+daemon doesn't trust the connection itself. Every request except `/ping`
+must carry the per-session token, which only you can read (see
+[Authentication](#backend-api)). As a second layer, the installer action only
+runs files that you own and that no one else can write, in a folder no one
+else can swap files in.
 
 - **Reading:** `yabridgectl status`, `yabridgectl --version`, your plugin
   folders, REAPER's plugin cache and, with crash watch on, the yabridge log.

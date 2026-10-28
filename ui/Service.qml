@@ -80,19 +80,29 @@ Item {
     try { return text ? JSON.parse(text) : null } catch (e) { return null }
   }
 
+  // The daemon writes a fresh token here on every start (backend/auth.py).
+  // It is readable only by this user, which is what keeps other local
+  // accounts from driving the daemon through the shared loopback port.
+  readonly property string tokenPath: (Quickshell.env("XDG_RUNTIME_DIR") || (Quickshell.env("HOME") + "/.local/state")) + "/omavst/token"
+  function token() { return String(tokenFile.text() || "").trim() }
+
   // done(status, body): status 0 means nothing answered (refused / timeout).
-  function request(method, path, timeoutMs, done, body) {
+  // A 401 means the daemon restarted with a new token: re-read it, retry once.
+  function request(method, path, timeoutMs, done, body, retried) {
     var xhr = new XMLHttpRequest()
     xhr.timeout = timeoutMs
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== XMLHttpRequest.DONE) return
+      if (xhr.status === 401 && !retried) {
+        tokenFile.reload()
+        root.request(method, path, timeoutMs, done, body, true)
+        return
+      }
       done(xhr.status, xhr.status === 0 ? null : root.parseJson(xhr.responseText))
     }
     xhr.open(method, root.baseUrl + path)
-    if (method === "POST") {
-      xhr.setRequestHeader("X-OmaVST", "1")
-      xhr.setRequestHeader("Content-Type", "application/json")
-    }
+    if (path !== "ping") xhr.setRequestHeader("X-OmaVST-Token", root.token())
+    if (method === "POST") xhr.setRequestHeader("Content-Type", "application/json")
     xhr.send(body === undefined ? null : JSON.stringify(body))
   }
 
@@ -103,6 +113,7 @@ Item {
         root.online = true
         root.lastError = ""
         root.daemonMode = daemonProc.running ? "owned" : "external"
+        tokenFile.reload()
         root.fetchPlugins(false)
       } else if (status !== 0) {
         // Something else owns the port. Don't spawn a daemon that would just
@@ -218,6 +229,15 @@ Item {
     onExited: (exitCode, exitStatus) => {
       if (exitCode > 1) root.actionResult = { ok: false, error: { message: "Couldn't open the file picker (is zenity installed?)" } }
     }
+  }
+
+  FileView {
+    id: tokenFile
+    path: root.tokenPath
+    blockLoading: true
+    printErrors: false
+    watchChanges: true
+    onFileChanged: reload()
   }
 
   FileView {

@@ -12,7 +12,9 @@ Endpoints (GET, JSON)::
     /api/v1/plugins/details?id= size, version, vendor for one plugin
     /api/v1/snapshots           Wine prefix backups
 
-Actions (POST, require the ``X-OmaVST: 1`` header)::
+Every endpoint except /ping requires the per-session token from
+``$XDG_RUNTIME_DIR/omavst/token`` in the ``X-OmaVST-Token`` header (see
+auth.py). Actions (POST)::
 
     /api/v1/yabridge/sync       run ``yabridgectl sync``
     /api/v1/plugins/disable     {"id": ...}
@@ -62,6 +64,7 @@ from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import auth  # noqa: E402
 import crash_watch  # noqa: E402
 import plugin_manager  # noqa: E402
 import reaper  # noqa: E402
@@ -274,6 +277,10 @@ class Backend:
         installer = body.get("path")
         if not isinstance(installer, str) or not installer:
             return _error("bad_request", "missing installer path")
+        try:
+            wine_tools.check_installer(installer)  # fail fast, before any backup
+        except wine_tools.ToolError as exc:
+            return _error(exc.code, str(exc))
         prefix = self.prefix()
         backup_first = self.settings["backupBeforeInstall"]
 
@@ -335,7 +342,9 @@ class Backend:
                 log.exception("auto-sync failed")
 
 
-def make_handler(backend: Backend) -> type[BaseHTTPRequestHandler]:
+def make_handler(backend: Backend, token: dict[str, str]) -> type[BaseHTTPRequestHandler]:
+    """``token["value"]`` is filled in once the port is bound; until then
+    (empty) every authenticated request is refused."""
     class Handler(BaseHTTPRequestHandler):
         server_version = f"OmaVST/{VERSION}"
 
@@ -348,9 +357,23 @@ def make_handler(backend: Backend) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(body)
 
+        def _authorized(self, path: str) -> bool:
+            """Loopback is reachable by every local user, so everything but
+            /ping needs the token only the desktop user can read. Requests
+            with an Origin header come from a browser page: always refused."""
+            if self.headers.get("Origin"):
+                self._send(HTTPStatus.FORBIDDEN, {"ok": False, "error": {"code": "forbidden", "message": "browser requests are not allowed"}})
+                return False
+            if path == "api/v1/ping" or (token["value"] and auth.check(token["value"], self.headers.get(auth.HEADER))):
+                return True
+            self._send(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": {"code": "unauthorized", "message": "missing or wrong API token"}})
+            return False
+
         def do_GET(self) -> None:  # noqa: N802 (http.server naming)
             url = urlsplit(self.path)
             path = url.path.strip("/")
+            if not self._authorized(path):
+                return
             probe = backend.route(path[len("api/v1/"):]) if path.startswith("api/v1/") else None
             if probe is None:
                 self._send(HTTPStatus.NOT_FOUND, {"ok": False, "error": {"code": "not_found", "message": url.path}})
@@ -367,15 +390,13 @@ def make_handler(backend: Backend) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:  # noqa: N802
             url = urlsplit(self.path)
             path = url.path.strip("/")
+            if not self._authorized(path) or path == "api/v1/ping":
+                if path == "api/v1/ping":
+                    self._send(HTTPStatus.METHOD_NOT_ALLOWED, {"ok": False, "error": {"code": "method", "message": "use GET"}})
+                return
             action = backend.action(path[len("api/v1/"):]) if path.startswith("api/v1/") else None
             if action is None:
                 self._send(HTTPStatus.NOT_FOUND, {"ok": False, "error": {"code": "not_found", "message": url.path}})
-                return
-            # A web page can fire simple cross-origin POSTs at loopback. Browsers
-            # always send Origin on those and cannot add a custom header without
-            # a CORS preflight (which we never answer), so both checks block it.
-            if self.headers.get("Origin") or self.headers.get("X-OmaVST") != "1":
-                self._send(HTTPStatus.FORBIDDEN, {"ok": False, "error": {"code": "forbidden", "message": "missing client header"}})
                 return
             try:
                 length = int(self.headers.get("Content-Length") or 0)
@@ -461,10 +482,19 @@ def main(argv: list[str] | None = None) -> int:
         log.error("refusing to bind to non-loopback address %s", host)
         return 2
 
+    token: dict[str, str] = {"value": ""}
     try:
-        server = ThreadingHTTPServer((host, port), make_handler(backend))
+        server = ThreadingHTTPServer((host, port), make_handler(backend, token))
     except OSError as exc:
         log.error("cannot listen on %s:%s: %s (is another instance running?)", host, port, exc)
+        return 1
+    # Only after binding: a second instance that fails to bind must not
+    # replace the running daemon's token.
+    try:
+        token["value"] = auth.create()
+    except OSError as exc:
+        log.error("cannot create the API token: %s", exc)
+        server.server_close()
         return 1
     server.daemon_threads = True
 
@@ -479,8 +509,11 @@ def main(argv: list[str] | None = None) -> int:
     threading.Thread(target=backend.autosync_loop, args=(stop_event,), name="autosync", daemon=True).start()
 
     log.info("OmaVST %s listening on http://%s:%s/api/v1/", VERSION, host, port)
-    server.serve_forever()
-    server.server_close()
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+        auth.remove(token["value"])
     return 0
 
 
