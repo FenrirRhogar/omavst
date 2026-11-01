@@ -14,8 +14,12 @@ from __future__ import annotations
 import hmac
 import os
 import secrets
-import stat
 from pathlib import Path
+
+try:
+    from .common import private_dir, write_private
+except ImportError:  # executed as a script
+    from common import private_dir, write_private
 
 HEADER = "X-OmaVST-Token"
 
@@ -30,28 +34,11 @@ def token_path() -> Path:
     return token_dir() / "token"
 
 
-def _private_dir(path: Path) -> None:
-    """Create ``path`` as 0700 and refuse one we don't own or others can enter."""
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    st = os.lstat(path)
-    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
-        raise PermissionError(f"{path} is not a directory owned by this user")
-    if st.st_mode & 0o077:
-        os.chmod(path, 0o700)
-
-
 def create() -> str:
     """Make a fresh token and publish it (atomically, mode 0600)."""
     token = secrets.token_hex(32)
-    d = token_dir()
-    _private_dir(d)
-    tmp = d / f".token.{os.getpid()}"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        os.write(fd, token.encode())
-    finally:
-        os.close(fd)
-    os.replace(tmp, token_path())
+    private_dir(token_dir())
+    write_private(token_path(), token)
     return token
 
 

@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -24,9 +25,41 @@ USER_CONFIG = (
     / "config.json"
 )
 
+# Everything OmaVST stores for the user. Nothing here is meant for other local
+# accounts, and default umasks would leave it readable, so both are kept 0700.
+DATA_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "omavst"
+STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "omavst"
+
 # yabridgectl colours its output when it thinks it is on a terminal; strip any
 # escape sequences defensively so parsers only ever see plain text.
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def private_dir(path: Path) -> Path:
+    """Create ``path`` as 0700, or tighten it to 0700. Refuses a directory
+    owned by someone else. Follows symlinks, so it may live on another disk."""
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    st = os.stat(path)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+        raise PermissionError(f"{path} is not a directory owned by this user")
+    if st.st_mode & 0o077:
+        os.chmod(path, 0o700)
+    return path
+
+
+def write_private(path: Path, text: str, mode: int = 0o600) -> None:
+    """Atomically replace ``path``. The temporary file is created with ``mode``
+    from the start, so the content is never briefly readable by others."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        with os.fdopen(fd, "w") as f:
+            os.fchmod(f.fileno(), mode)  # undo the umask for modes like 0644
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def strip_ansi(text: str) -> str:

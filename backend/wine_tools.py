@@ -5,7 +5,10 @@ function here just does the work and returns a result dict or raises
 :class:`ToolError`.
 
 Backups are ``tar --zstd`` archives of the whole prefix, written next to a
-small JSON sidecar. Restoring never deletes anything: the current prefix is
+small JSON sidecar. A prefix holds licences and logins, so archives and
+sidecars are always mode 0600 and the default folder 0700, whatever the umask
+or the prefix's own permissions. Only files this user owns are listed or
+restored, because a restore trusts the sidecar for where the prefix goes. Restoring never deletes anything: the current prefix is
 renamed to ``<prefix>.before-restore-<time>`` first, so a bad restore can be
 undone by renaming it back.
 
@@ -29,14 +32,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 try:
-    from .common import CommandError, run_command
+    from . import reaper
+    from .common import DATA_DIR, CommandError, private_dir, run_command, write_private
 except ImportError:  # executed as a script
-    from common import CommandError, run_command
+    import reaper
+    from common import DATA_DIR, CommandError, private_dir, run_command, write_private
 
-DATA_DIR = (
-    Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    / "omavst"
-)
 DEFAULT_SNAPSHOT_DIR = DATA_DIR / "snapshots"
 _NAME_RE = re.compile(r"^wine-[A-Za-z0-9._-]+-\d{8}-\d{6}\.tar\.zst$")
 
@@ -61,7 +62,7 @@ def _running(*pgrep_args: str) -> bool:
 
 
 def _require_wine_idle(prefix: str, what: str, progress: Callable[[str], None]) -> None:
-    if _running("-x", "reaper"):
+    if reaper.is_running():
         raise ToolError("reaper_running", f"Close REAPER before {what}")
     # Live hosts only: zombies don't count, and "-x" on the 15-char process
     # name skips WebView2 helpers whose arguments merely mention yabridge-host.
@@ -89,19 +90,50 @@ def _dir_size(path: Path) -> int:
 
 # --- snapshots ---------------------------------------------------------------
 
+def _prepare_snapshot_dir(config: dict[str, Any]) -> Path:
+    d = snapshot_dir(config)
+    if d == DEFAULT_SNAPSHOT_DIR:
+        private_dir(DATA_DIR)
+        return private_dir(d)
+    # A folder the user chose may be shared on purpose: leave an existing one
+    # alone. The files in it are 0600 either way.
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return d
+
+
+def _owned_file(path: Path) -> bool:
+    """A regular file (not a symlink) owned by this user; tightened to 0600,
+    which also covers backups made by versions before this rule existed."""
+    try:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+            return False
+        if st.st_mode & 0o077:
+            os.chmod(path, 0o600)
+        return True
+    except OSError:
+        return False
+
+
+def _read_sidecar(archive: Path) -> dict[str, Any]:
+    sidecar = archive.with_name(archive.name + ".json")
+    if not _owned_file(sidecar):
+        return {}
+    try:
+        return json.loads(sidecar.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
 def list_snapshots(config: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     d = snapshot_dir(config)
     if not d.is_dir():
         return out
     for f in sorted(d.iterdir(), reverse=True):
-        if not _NAME_RE.match(f.name):
+        if not _NAME_RE.match(f.name) or not _owned_file(f):
             continue
-        meta: dict[str, Any] = {}
-        try:
-            meta = json.loads(f.with_name(f.name + ".json").read_text())
-        except (OSError, ValueError):
-            pass
+        meta = _read_sidecar(f)
         st = f.stat()
         out.append({
             "name": f.name,
@@ -119,8 +151,7 @@ def create_snapshot(config: dict[str, Any], prefix: str, label: str = "",
     if not (src / "system.reg").is_file():
         raise ToolError("not_prefix", f"{prefix} doesn't look like a Wine prefix")
     _require_wine_idle(prefix, "backing up the Wine prefix", progress)
-    dest_dir = snapshot_dir(config)
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_dir = _prepare_snapshot_dir(config)
 
     progress("Measuring the prefix…")
     needed = _dir_size(src)
@@ -135,13 +166,13 @@ def create_snapshot(config: dict[str, Any], prefix: str, label: str = "",
     progress(f"Backing up {src} ({needed >> 20} MB)…")
     proc = subprocess.run(
         ["tar", "--zstd", "-cf", str(tmp), "-C", str(src.parent), src.name],
-        capture_output=True, text=True, stdin=subprocess.DEVNULL,
+        capture_output=True, text=True, stdin=subprocess.DEVNULL, umask=0o077,
     )
     if proc.returncode != 0:
         tmp.unlink(missing_ok=True)
         raise ToolError("tar_failed", f"tar failed: {proc.stderr.strip()[-500:]}")
     tmp.replace(dest)
-    dest.with_name(dest.name + ".json").write_text(json.dumps(
+    write_private(dest.with_name(dest.name + ".json"), json.dumps(
         {"prefix": str(src), "created": time.time(), "label": label, "sourceBytes": needed}))
     return {"ok": True, "message": f"Backed up {src.name} ({dest.stat().st_size >> 20} MB)", "snapshot": dest.name}
 
@@ -150,7 +181,7 @@ def _snapshot_path(config: dict[str, Any], name: str) -> Path:
     if not _NAME_RE.match(name):
         raise ToolError("bad_name", "not a snapshot name")
     p = snapshot_dir(config) / name
-    if not p.is_file():
+    if not _owned_file(p):
         raise ToolError("not_found", f"snapshot {name} not found")
     return p
 
@@ -166,9 +197,8 @@ def restore_snapshot(config: dict[str, Any], name: str,
                      progress: Callable[[str], None] = lambda _m: None) -> dict[str, Any]:
     archive = _snapshot_path(config, name)
     try:
-        meta = json.loads(archive.with_name(archive.name + ".json").read_text())
-        prefix = Path(meta["prefix"])
-    except (OSError, ValueError, KeyError):
+        prefix = Path(_read_sidecar(archive)["prefix"])
+    except (KeyError, TypeError):
         raise ToolError("no_meta", "this backup has no record of which prefix it came from")
     _require_wine_idle(str(prefix), "restoring a backup", progress)
 

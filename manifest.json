@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "fenrirrhogar.omavst",
   "name": "OmaVST",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "author": "FenrirRhogar",
   "description": "Plugin manager for Linux music producers: Windows plugins (yabridge) and native VST3/CLAP/LV2 plugins in one searchable list. Sync, disable, remove, install from a Windows installer, back up the Wine prefix, and spot plugins that crash.",
   "license": "MIT",

@@ -16,24 +16,34 @@ The cache also gives us each plugin's display name and vendor, e.g.
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 from typing import Any
 
 try:
-    from .common import CommandError, run_command
+    from .common import CommandError, run_command, write_private
 except ImportError:  # executed as a script
-    from common import CommandError, run_command
+    from common import CommandError, run_command, write_private
 
 REAPER_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "REAPER"
 CACHE_FILES = ["reaper-vstplugins64.ini", "reaper-clap-linux-x86_64.ini"]
 
 
 def is_running() -> bool:
+    """True if this user is running the REAPER DAW. The name alone isn't
+    enough: Steam's process manager is also called ``reaper``, so check that
+    the program lives in a REAPER folder (/usr/lib/REAPER/reaper, ...)."""
     try:
-        run_command(["pgrep", "-x", "reaper"], timeout=5)
-        return True
+        pids = run_command(["pgrep", "-u", str(os.getuid()), "-x", "reaper"], timeout=5).split()
     except CommandError:
         return False  # pgrep exits 1 when nothing matches
+    for pid in pids:
+        try:
+            if Path(os.readlink(f"/proc/{pid}/exe")).parent.name.upper() == "REAPER":
+                return True
+        except OSError:
+            continue  # exited in the meantime
+    return False
 
 
 def split_vendor(label: str) -> tuple[str, str | None]:
@@ -97,9 +107,7 @@ def forget(paths: list[str], reaper_dir: Path = REAPER_DIR) -> dict[str, Any]:
             continue
         kept = [ln for ln in lines if ln.partition("=")[0] not in keys]
         if len(kept) != len(lines):
-            tmp = f.with_suffix(f.suffix + ".omavst-tmp")
-            tmp.write_text("".join(kept))
-            tmp.replace(f)
+            write_private(f, "".join(kept), stat.S_IMODE(f.stat().st_mode))  # keep REAPER's mode
             removed += len(lines) - len(kept)
     return {"reaperForgot": removed}
 

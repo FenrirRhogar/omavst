@@ -70,7 +70,7 @@ import plugin_manager  # noqa: E402
 import reaper  # noqa: E402
 import vst_scanner  # noqa: E402
 import wine_tools  # noqa: E402
-from common import PLUGIN_ROOT, load_config  # noqa: E402
+from common import DATA_DIR, PLUGIN_ROOT, STATE_DIR, load_config, private_dir, write_private  # noqa: E402
 
 log = logging.getLogger("omavst")
 
@@ -113,7 +113,7 @@ class ProbeCache:
             self._entries.pop(key, None)
 
 
-SETTINGS_FILE = plugin_manager.DATA_DIR / "settings.json"
+SETTINGS_FILE = DATA_DIR / "settings.json"
 DEFAULT_SETTINGS = {"autoSync": True, "backupBeforeInstall": False}
 AUTOSYNC_SECONDS = 20
 
@@ -149,8 +149,8 @@ class Backend:
         for k in DEFAULT_SETTINGS:
             if isinstance(body.get(k), bool):
                 self.settings[k] = body[k]
-        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SETTINGS_FILE.write_text(json.dumps(self.settings, indent=2))
+        private_dir(DATA_DIR)
+        write_private(SETTINGS_FILE, json.dumps(self.settings, indent=2))
         self.cache.invalidate("plugins")
         return {"ok": True, "plugins": self.plugins()}
 
@@ -463,6 +463,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.exit_with_parent:
         _exit_with_parent()
+
+    # Also tightens folders left at default permissions by older versions.
+    for folder in (DATA_DIR, STATE_DIR):
+        try:
+            private_dir(folder)
+        except OSError as exc:
+            log.warning("cannot make %s private: %s", folder, exc)
 
     config = load_config(args.config)
     if "configError" in config:

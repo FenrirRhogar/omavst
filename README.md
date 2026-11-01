@@ -204,8 +204,14 @@ at a time.
 `$XDG_RUNTIME_DIR/omavst/token`:
 
 ```sh
-curl -H "X-OmaVST-Token: $(cat "$XDG_RUNTIME_DIR/omavst/token")" http://127.0.0.1:47811/api/v1/plugins
+printf 'header = "X-OmaVST-Token: %s"\n' "$(cat "$XDG_RUNTIME_DIR/omavst/token")" |
+  curl -K - http://127.0.0.1:47811/api/v1/plugins
 ```
+
+Pass the token to curl on standard input like this, never as a command-line
+argument such as `curl -H "X-OmaVST-Token: ..."`: other local users can
+usually read a running program's arguments. `printf` is built into the shell,
+so it doesn't expose the token either.
 
 The daemon makes a new random token each time it starts, writes it with mode
 0600 in your runtime folder (mode 0700, so only you can read it) and deletes
@@ -236,6 +242,14 @@ must carry the per-session token, which only you can read (see
 [Authentication](#backend-api)). As a second layer, the installer action only
 runs files that you own and that no one else can write, in a folder no one
 else can swap files in.
+
+Everything OmaVST stores is private to you, whatever your umask:
+`~/.local/share/omavst/` and `~/.local/state/omavst/` are mode 0700, and
+existing ones are tightened when the daemon starts. That covers backups,
+disabled plugins, settings and the crash log. Backup archives hold your whole
+Wine prefix, including licence data, so they are mode 0600 even if you point
+`snapshots.dir` at a shared folder, and OmaVST only lists or restores backups
+you own.
 
 - **Reading:** `yabridgectl status`, `yabridgectl --version`, your plugin
   folders, REAPER's plugin cache and, with crash watch on, the yabridge log.

@@ -37,17 +37,13 @@ from typing import Any
 
 try:
     from . import crash_watch, reaper, vst_scanner
-    from .common import CommandError, error, run_command
+    from .common import DATA_DIR, CommandError, error, private_dir, run_command, write_private
 except ImportError:  # executed as a script
     import crash_watch
     import reaper
     import vst_scanner
-    from common import CommandError, error, run_command
+    from common import DATA_DIR, CommandError, error, private_dir, run_command, write_private
 
-DATA_DIR = (
-    Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    / "omavst"
-)
 DISABLED_DIR = DATA_DIR / "disabled"
 STATE_FILE = DATA_DIR / "disabled.json"
 
@@ -72,10 +68,8 @@ def _load_state() -> list[dict[str, Any]]:
 
 
 def _save_state(entries: list[dict[str, Any]]) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps({"version": 1, "plugins": entries}, indent=2))
-    tmp.replace(STATE_FILE)  # atomic: a crash can't leave a half-written file
+    private_dir(DATA_DIR)
+    write_private(STATE_FILE, json.dumps({"version": 1, "plugins": entries}, indent=2))
 
 
 # --- path safety -------------------------------------------------------------
@@ -236,6 +230,7 @@ def disable(config: dict[str, Any], plugin_id: str) -> dict[str, Any]:
     }
 
     if plugin["source"] == "native":
+        private_dir(DATA_DIR)
         dest_dir = DISABLED_DIR / (plugin["format"] or "other")
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / Path(plugin["path"]).name

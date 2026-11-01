@@ -19,7 +19,11 @@ import time
 from pathlib import Path
 from typing import Any
 
-STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "omavst"
+try:
+    from .common import STATE_DIR, private_dir
+except ImportError:  # executed as a script
+    from common import STATE_DIR, private_dir
+
 LOG_FILE = STATE_DIR / "yabridge.log"
 APPS_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "applications"
 SYSTEM_ENTRY = Path("/usr/share/applications/cockos-reaper.desktop")
@@ -61,7 +65,7 @@ def enable() -> dict[str, Any]:
         base = SYSTEM_ENTRY.read_text()
     except OSError:
         return {"ok": False, "error": {"code": "no_reaper", "message": f"{SYSTEM_ENTRY} not found; is REAPER installed?"}}
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    private_dir(STATE_DIR)  # the log carries everything Wine prints
     APPS_DIR.mkdir(parents=True, exist_ok=True)
     lines = []
     for line in base.splitlines():
