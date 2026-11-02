@@ -38,6 +38,7 @@ backend/
   common.py          command runner, config loading, error format
 systemd/             optional user unit for running the daemon standalone
 config/defaults.json default settings
+tests/               unit tests for the backend (standard library unittest)
 ```
 
 ## Requirements
@@ -273,6 +274,16 @@ you own.
     for crash watch
 
 Nothing uses sudo.
+
+## Tests
+
+The backend tests need nothing beyond Python itself:
+
+```sh
+python3 -m unittest discover -s tests -t .
+```
+
+They also run on every push via GitHub Actions.
 
 ## License
 
