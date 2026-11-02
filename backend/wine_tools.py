@@ -234,32 +234,53 @@ def restore_snapshot(config: dict[str, Any], name: str,
 INSTALLER_SUFFIXES = (".exe", ".msi")
 
 
+def _check_dir_chain(path: Path) -> None:
+    """Every folder from ``path`` up to / must be owned by this user or root,
+    and writable by nobody else unless it has the sticky bit (like /tmp).
+
+    Otherwise someone else could rename the installer, or any folder above
+    it, between this check and Wine opening the file, and swap in their own.
+    Group write counts even on a folder the user owns (e.g. mode 0770). The
+    sticky bit stops others from renaming entries they don't own, which
+    covers every entry on our path.
+    """
+    uid = os.getuid()
+    for d in [path, *path.parents]:
+        try:
+            st = os.stat(d)
+        except OSError:
+            raise ToolError("bad_installer", f"can't check {d}")
+        if st.st_uid not in (uid, 0):
+            raise ToolError("untrusted_installer",
+                            f"{d} belongs to another user; move the installer to your Downloads folder first")
+        if st.st_mode & 0o022 and not st.st_mode & stat.S_ISVTX:
+            raise ToolError("untrusted_installer",
+                            f"other users can change {d}; move the installer to your Downloads folder first")
+
+
 def check_installer(installer: str) -> Path:
     """Only run installers the desktop user controls.
 
     The file (after resolving symlinks) must be a regular file owned by this
-    user and not writable by anyone else, in a folder nobody else can swap
-    files in. That rules out running a file another account planted, e.g.
-    in /tmp, even if a request did reach the daemon.
+    user and not writable by anyone else, and no other account may be able to
+    change any folder on its path (see _check_dir_chain). That rules out
+    running a file another account planted or swapped in, even if a request
+    did reach the daemon. Installers with extra files next to them are covered
+    too, since they share the checked folder.
     """
     path = Path(os.path.realpath(installer))
     if path.suffix.lower() not in INSTALLER_SUFFIXES:
         raise ToolError("bad_installer", "pick a Windows installer (.exe or .msi)")
     try:
         st = os.stat(path)
-        parent = os.stat(path.parent)
     except OSError:
         raise ToolError("bad_installer", f"{installer} not found")
-    uid = os.getuid()
     if not stat.S_ISREG(st.st_mode):
         raise ToolError("bad_installer", "the installer must be a regular file")
-    if st.st_uid != uid or st.st_mode & 0o022:
+    if st.st_uid != os.getuid() or st.st_mode & 0o022:
         raise ToolError("untrusted_installer",
                         f"{path.name} isn't owned by you or can be changed by other users; copy it to your Downloads folder first")
-    shared_dir = parent.st_mode & 0o002 and not parent.st_mode & stat.S_ISVTX
-    if (parent.st_uid not in (uid, 0)) or (parent.st_mode & 0o020 and parent.st_uid != uid) or shared_dir:
-        raise ToolError("untrusted_installer",
-                        f"{path.parent} can be changed by other users; move the installer to your Downloads folder first")
+    _check_dir_chain(path.parent)
     return path
 
 

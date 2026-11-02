@@ -240,8 +240,10 @@ Other accounts on the same machine can connect to 127.0.0.1 too, so the
 daemon doesn't trust the connection itself. Every request except `/ping`
 must carry the per-session token, which only you can read (see
 [Authentication](#backend-api)). As a second layer, the installer action only
-runs files that you own and that no one else can write, in a folder no one
-else can swap files in.
+runs files that you own and that no one else can write, and only if no other
+account can change any folder on the way to the file: every folder up to `/`
+must belong to you or root and be writable only by its owner, unless it has
+the sticky bit like `/tmp` (the same rule `ssh` applies to key files).
 
 Everything OmaVST stores is private to you, whatever your umask:
 `~/.local/share/omavst/` and `~/.local/state/omavst/` are mode 0700, and
